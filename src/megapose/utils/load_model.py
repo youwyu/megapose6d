@@ -61,7 +61,6 @@ def load_named_model(
         "split_objects": False,
         "n_workers": n_workers,
     }
-
     coarse_model, refiner_model, mesh_db = load_pose_models(
         coarse_run_id=model["coarse_run_id"],
         refiner_run_id=model["refiner_run_id"],
@@ -70,7 +69,6 @@ def load_named_model(
         renderer_kwargs=renderer_kwargs,
         models_root=LOCAL_DATA_DIR / "megapose-models",
     )
-
     depth_refiner = None
     if model.get("depth_refiner", None) == "ICP":
         depth_refiner = ICPRefiner(
@@ -78,6 +76,7 @@ def load_named_model(
             refiner_model.renderer,
         )
 
+    
     pose_estimator = PoseEstimator(
         refiner_model=refiner_model,
         coarse_model=coarse_model,

@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Megapose: Inference (barbecue-sauce)",
+            "type": "python",
+            "request": "launch",
+            "module": "megapose.scripts.run_inference_on_example",
+            "args": [
+                "barbecue-sauce",
+                "--run-inference"
+            ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "1"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}

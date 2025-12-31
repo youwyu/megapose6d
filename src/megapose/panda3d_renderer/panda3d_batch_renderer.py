@@ -1,3 +1,4 @@
+
 """
 Copyright (c) 2022 Inria & NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -23,7 +24,6 @@ from typing import List, Optional, Set, Union
 # Third Party
 import numpy as np
 import torch
-import torch.multiprocessing
 
 # MegaPose
 from megapose.datasets.object_dataset import RigidObjectDataset
@@ -84,70 +84,6 @@ class RenderArguments:
     render_normals: bool
     render_depth: bool
     scene_data: SceneData
-
-
-def worker_loop(
-    worker_id: int,
-    in_queue: torch.multiprocessing.Queue,
-    out_queue: torch.multiprocessing.Queue,
-    object_dataset: RigidObjectDataset,
-    preload_labels: Set[str] = set(),
-) -> None:
-
-    logger.debug(f"Init worker: {worker_id}")
-    renderer = Panda3dSceneRenderer(
-        asset_dataset=object_dataset,
-        preload_labels=preload_labels,
-    )
-
-    while True:
-        render_args: Union[RenderArguments, None] = in_queue.get()
-        if render_args is None:
-            break
-
-        scene_data = render_args.scene_data
-        is_valid = (
-            np.isfinite(scene_data.object_datas[0].TWO.toHomogeneousMatrix()).all()
-            and np.isfinite(scene_data.camera_data.TWC.toHomogeneousMatrix()).all()
-            and np.isfinite(scene_data.camera_data.K).all()
-        )
-
-        if is_valid:
-            # Set copy_arrays=True so that the numpy
-            # arrays are contiguous. This ensures that they
-            # have non-negative strides and can be converted into
-            # torch.tensors.
-            renderings = renderer.render_scene(
-                object_datas=scene_data.object_datas,
-                camera_datas=[scene_data.camera_data],
-                light_datas=scene_data.light_datas,
-                render_normals=render_args.render_normals,
-                render_depth=render_args.render_depth,
-                copy_arrays=True,  # ensures non-negative strid
-            )
-            renderings_ = renderings[0]
-        else:
-            h, w = scene_data.camera_data.resolution
-            renderings_ = CameraRenderingData(
-                rgb=np.zeros((h, w, 3), dtype=np.uint8),
-                normals=np.zeros((h, w, 1), dtype=np.uint8),
-                depth=np.zeros((h, w, 1), dtype=np.float32),
-            )
-
-        output = RenderOutput(
-            data_id=render_args.data_id,
-            rgb=torch.tensor(renderings_.rgb).share_memory_(),
-            normals=torch.tensor(renderings_.normals).share_memory_()
-            if render_args.render_normals
-            else None,
-            depth=torch.tensor(renderings_.depth).share_memory_()
-            if render_args.render_depth
-            else None,
-        )
-        del render_args
-        out_queue.put(output)
-
-    logger.debug(f"Close worker: {worker_id}")
 
 
 class Panda3dBatchRenderer:
@@ -228,10 +164,10 @@ class Panda3dBatchRenderer:
 
         if render_mask:
             raise NotImplementedError
-
         scene_datas = self.make_scene_data(labels, TCO, K, light_datas, resolution)
         bsz = len(scene_datas)
 
+        render_args_list = []
         for n, scene_data_n in enumerate(scene_datas):
             render_args = RenderArguments(
                 data_id=n,
@@ -240,15 +176,15 @@ class Panda3dBatchRenderer:
                 render_normals=render_normals,
             )
 
-            in_queue = self._object_label_to_queue[scene_data_n.object_datas[0].label]
-            in_queue.put(render_args)
+            render_args_list.append(render_args)
+        renders_outputs = self.render_scene(render_args_list)
 
         list_rgbs = [None for _ in np.arange(bsz)]
         list_depths = [None for _ in np.arange(bsz)]
         list_normals = [None for _ in np.arange(bsz)]
 
         for n in np.arange(bsz):
-            renders = self._out_queue.get()
+            renders = renders_outputs[n]
             data_id = renders.data_id
             list_rgbs[data_id] = renders.rgb
             if render_depth:
@@ -282,59 +218,45 @@ class Panda3dBatchRenderer:
         )
 
     def _init_renderers(self, preload_cache: bool) -> None:
+        # Initialize the renderer with all objects preloaded if required
         object_labels = [obj.label for obj in self._object_dataset.list_objects]
+        preload_labels = set(object_labels) if preload_cache else set()
+        self.renderer = Panda3dSceneRenderer(
+            asset_dataset=self._object_dataset,
+            preload_labels=preload_labels,
+        )
 
-        self._renderers: List[torch.multiprocessing.Process] = []
-        if self._split_objects:
-            self._in_queues: List[torch.multiprocessing.Queue] = [
-                torch.multiprocessing.Queue() for _ in range(self._n_workers)
-            ]
-            self._worker_id_to_queue = {n: self._in_queues[n] for n in range(self._n_workers)}
-            object_labels_split = np.array_split(object_labels, self._n_workers)
-            self._object_label_to_queue = dict()
-            for n, split in enumerate(object_labels_split):
-                for label in split:
-                    self._object_label_to_queue[label] = self._in_queues[n]
-        else:
-            object_labels_split = [object_labels for _ in range(self._n_workers)]
-            self._in_queues = [torch.multiprocessing.Queue()]
-            self._object_label_to_queue = {k: self._in_queues[0] for k in object_labels}
-            self._worker_id_to_queue = {n: self._in_queues[0] for n in range(self._n_workers)}
-
-        self._out_queue: torch.multiprocessing.Queue = torch.multiprocessing.Queue()
-
-        for n in range(self._n_workers):
-            if preload_cache:
-                preload_labels = set(object_labels_split[n].tolist())
-            else:
-                preload_labels = set()
-            renderer_process = torch.multiprocessing.Process(
-                target=worker_loop,
-                kwargs=dict(
-                    worker_id=n,
-                    in_queue=self._worker_id_to_queue[n],
-                    out_queue=self._out_queue,
-                    object_dataset=self._object_dataset,
-                    preload_labels=preload_labels,
-                ),
+    def render_scene(self, render_args_list):
+        results = []
+        for render_args in render_args_list:
+            scene_data = render_args.scene_data
+            is_valid = (
+                    np.isfinite(scene_data.object_datas[0].TWO.toHomogeneousMatrix()).all() and
+                    np.isfinite(scene_data.camera_data.TWC.toHomogeneousMatrix()).all() and
+                    np.isfinite(scene_data.camera_data.K).all()
             )
-            renderer_process.start()
-            self._renderers.append(renderer_process)
-
-    def stop(self) -> None:
-        logger.debug("Stopping batch renderer...")
-        if self._is_closed:
-            return
-        for n in range(self._n_workers):
-            self._worker_id_to_queue[n].put(None)
-        for renderer_process in self._renderers:
-            renderer_process.join()
-            renderer_process.terminate()
-        for queue in self._in_queues:
-            queue.close()
-        self._out_queue.close()
-        self._is_closed = True
-        logger.debug("Batch renderer is closed.")
-
-    def __del__(self) -> None:
-        self.stop()
+            if is_valid:
+                renderings = self.renderer.render_scene(
+                    object_datas=scene_data.object_datas,
+                    camera_datas=[scene_data.camera_data],
+                    light_datas=scene_data.light_datas,
+                    render_normals=render_args.render_normals,
+                    render_depth=render_args.render_depth,
+                    copy_arrays=True,
+                )
+                renderings_ = renderings[0]
+            else:
+                h, w = scene_data.camera_data.resolution
+                renderings_ = CameraRenderingData(
+                    rgb=np.zeros((h, w, 3), dtype=np.uint8),
+                    normals=np.zeros((h, w, 1), dtype=np.uint8),
+                    depth=np.zeros((h, w, 1), dtype=np.float32),
+                )
+            output = RenderOutput(
+                data_id=render_args.data_id,
+                rgb=torch.tensor(renderings_.rgb),
+                normals=torch.tensor(renderings_.normals) if render_args.render_normals else None,
+                depth=torch.tensor(renderings_.depth) if render_args.render_depth else None,
+            )
+            results.append(output)
+        return results

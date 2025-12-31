@@ -173,7 +173,7 @@ class PoseEstimator(torch.nn.Module):
             )
             timer_.stop()
             model_time += timer_.elapsed()
-
+            print(f"Refiner Once Time: {timer_.elapsed()}")
             if keep_all_outputs:
                 all_outputs.append(outputs_)
 
@@ -207,6 +207,11 @@ class PoseEstimator(torch.nn.Module):
             "model_time": model_time,
             "time": elapsed,
         }
+
+        # print("Refiner Time: ", timer.stop())
+        # print("Model Time: ", model_time)
+        # print("Total Time: ", elapsed)
+        # print(f"Pose prediction on {B} poses (n_iterations={n_iterations}):" f" {timer.stop()}")
 
         logger.debug(
             f"Pose prediction on {B} poses (n_iterations={n_iterations}):" f" {timer.stop()}"

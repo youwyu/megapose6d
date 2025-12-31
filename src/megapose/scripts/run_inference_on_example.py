@@ -10,6 +10,7 @@ import numpy as np
 from bokeh.io import export_png
 from bokeh.plotting import gridplot
 from PIL import Image
+import cv2
 
 # MegaPose
 from megapose.config import LOCAL_DATA_DIR
@@ -127,7 +128,6 @@ def run_inference(
     example_dir: Path,
     model_name: str,
 ) -> None:
-
     model_info = NAMED_MODELS[model_name]
 
     observation = load_observation_tensor(
@@ -138,12 +138,11 @@ def run_inference(
 
     logger.info(f"Loading model {model_name}.")
     pose_estimator = load_named_model(model_name, object_dataset).cuda()
-
     logger.info(f"Running inference.")
     output, _ = pose_estimator.run_inference_pipeline(
         observation, detections=detections, **model_info["inference_parameters"]
     )
-
+    
     save_predictions(example_dir, output)
     return
 
@@ -187,9 +186,32 @@ def make_output_visualization(
     fig_all = gridplot([[fig_rgb, fig_contour_overlay, fig_mesh_overlay]], toolbar_location=None)
     vis_dir = example_dir / "visualizations"
     vis_dir.mkdir(exist_ok=True)
-    export_png(fig_mesh_overlay, filename=vis_dir / "mesh_overlay.png")
-    export_png(fig_contour_overlay, filename=vis_dir / "contour_overlay.png")
-    export_png(fig_all, filename=vis_dir / "all_results.png")
+    # export_png(fig_mesh_overlay, filename=vis_dir / "mesh_overlay.png")
+    # export_png(fig_contour_overlay, filename=vis_dir / "contour_overlay.png")
+    # export_png(fig_all, filename=vis_dir / "all_results.png")
+    # 1. 转换格式: RGB -> BGR (因为 OpenCV 使用 BGR)
+    img_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    render_bgr = cv2.cvtColor(renderings.rgb, cv2.COLOR_RGB2BGR)
+
+    # 2. 生成 Mesh Overlay (简单的加权融合)
+    # alpha 0.6 原图, 0.4 渲染图
+    overlay_img = cv2.addWeighted(img_bgr, 0.6, render_bgr, 0.4, 0)
+    cv2.imwrite(str(vis_dir / "mesh_overlay.png"), overlay_img)
+
+    # 3. 生成 Contour Overlay (轮廓图)
+    # 使用你原本的 make_contour_overlay 函数，它返回的是 RGB numpy array
+    contour_overlay_rgb = make_contour_overlay(
+        rgb, renderings.rgb, dilate_iterations=1, color=(0, 255, 0)
+    )["img"]
+    contour_overlay_bgr = cv2.cvtColor(contour_overlay_rgb, cv2.COLOR_RGB2BGR)
+    cv2.imwrite(str(vis_dir / "contour_overlay.png"), contour_overlay_bgr)
+
+    # 4. 生成 All Results (拼接图)
+    # 将三张图横向拼接 (hstack)
+    combined = np.hstack([img_bgr, contour_overlay_bgr, overlay_img])
+    cv2.imwrite(str(vis_dir / "all_results.png"), combined)
+
+    logger.info(f"Wrote visualizations to {vis_dir} (using OpenCV)")
     logger.info(f"Wrote visualizations to {vis_dir}.")
     return
 

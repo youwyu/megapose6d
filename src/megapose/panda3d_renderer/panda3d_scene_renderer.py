@@ -70,8 +70,8 @@ class App(ShowBase):
             "notify-level-device fatal\n"
             "texture-minfilter mipmap\n"
             "texture-anisotropic-degree 16\n"
-            "framebuffer-multisample 1\n"
-            "multisamples 4\n"
+            "framebuffer-multisample 0\n" # 1
+            "multisamples 0\n" # 4
             "background-color 0.0 0.0 0.0 0.0\n"
             "load-file-type p3assimp\n"
             "track-memory-usage 1\n"
@@ -255,7 +255,6 @@ class Panda3dSceneRenderer:
     def render_images(
         self, cameras: List[Panda3dCamera], copy_arrays: bool = True, render_depth: bool = False
     ) -> List[CameraRenderingData]:
-
         self._app.graphicsEngine.renderFrame()
         self._app.graphicsEngine.syncFrame()
 

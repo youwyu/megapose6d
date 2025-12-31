@@ -63,9 +63,7 @@ class MeshDataBase:
             l: as_mesh(
                 trimesh.load(
                     obj.mesh_path,
-                    group_material=False,
-                    process=False,
-                    skip_materials=True,
+                    process=True,
                     maintain_order=True,
                 )
             )

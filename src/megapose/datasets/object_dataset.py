@@ -87,7 +87,6 @@ class RigidObject:
                 instead of the mesh_units argument. This is the scale that converts
                 mesh units to meters.
         """
-
         self.label = label
         self.category = category
         self.mesh_path = mesh_path
